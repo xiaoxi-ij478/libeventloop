@@ -31,8 +31,8 @@
 		<Compiler>
 			<Add option="-fexceptions" />
 		</Compiler>
+		<Unit filename="eventloop.cpp" />
 		<Unit filename="eventloop.hpp" />
-		<Unit filename="main.cpp" />
 		<Extensions>
 			<lib_finder disable_auto="1" />
 		</Extensions>

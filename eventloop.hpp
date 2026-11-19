@@ -6,52 +6,35 @@
 #include <unordered_map>
 #include <functional>
 
-struct TimerInfo {
-    std::chrono::steady_clock::time_point last_time;
-    std::chrono::milliseconds interval;
-    bool oneshot;
-    std::function<void(unsigned)> callback;
-};
-
 class EventLoop
 {
-        unsigned event_loop_interval_us;
-        unsigned last_timer_id;
-        unsigned last_event_id;
-        std::queue<unsigned> event_queue;
-        std::unordered_map<unsigned, TimerInfo> timers;
-        std::unordered_map<int, std::function<void(int)>> manual_fds;
-        // *INDENT-OFF*
-        std::unordered_map<
-            unsigned, // event id
-            std::unordered_map<
-                unsigned, // event handle
-                std::function<void(unsigned, unsigned)> // callback(event id, event handle)
-            >
-        > events;
-        // *INDENT-ON*
+        int event_queue_pipe_fd[2];
+        unsigned pending_events;
+        std::unordered_map<int, std::function<void(int)>> timer_fds, manual_fds;
+        std::unordered_map<unsigned, std::function<void(unsigned)>> events;
 
     public:
-        EventLoop(unsigned event_loop_interval_us = 1000);
+        EventLoop();
 
-        unsigned add_event_listener(
+        bool add_event_listener(
             unsigned eventid,
-            const std::function<void(unsigned, unsigned)> &func
+            const std::function<void(unsigned)> &func
         );
-        void add_fd_listener(int fd, const std::function<void(int)> &func);
-        void remove_event_listener(unsigned eventid, unsigned handle);
-        void remove_fd_listener(int fd);
+        bool add_fd_listener(int fd, const std::function<void(int)> &func);
+        int set_timeout(
+            const std::chrono::nanoseconds &timeout,
+            const std::function<void(int)> &func
+        );
+        int set_interval(
+            const std::chrono::nanoseconds &interval,
+            const std::function<void(int)> &func
+        );
+        int after_idle(const std::function<void()> &func);
         void trigger_event(unsigned eventid);
-        unsigned set_timeout(
-            const std::chrono::milliseconds &timeout,
-            const std::function<void(unsigned)> &func
-        );
-        unsigned set_interval(
-            const std::chrono::milliseconds &interval,
-            const std::function<void(unsigned)> &func
-        );
-        void clear_timeout(unsigned handle);
-        void clear_interval(unsigned handle);
+        bool remove_event_listener(unsigned eventid);
+        bool remove_fd_listener(int fd);
+        bool clear_timeout(int handle);
+        bool clear_interval(int handle);
         void mainloop();
 };
 

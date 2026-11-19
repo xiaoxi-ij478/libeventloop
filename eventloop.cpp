@@ -2,107 +2,117 @@
 #include <cstdio>
 #include <cstdlib>
 #include <utility>
+#include <stdexcept>
 
 #include <unistd.h>
 #include <sys/select.h>
+#include <sys/timerfd.h>
 
 #include "eventloop.hpp"
 
-EventLoop::EventLoop(unsigned event_loop_interval_us) :
-    event_loop_interval_us(event_loop_interval_us),
-    last_timer_id(0),
-    last_event_id(0),
-    event_queue(),
-    timers(),
+EventLoop::EventLoop() :
+    event_queue_pipe_fd(),
+    pending_events(0),
+    timer_fds(),
     manual_fds(),
     events()
 {
+    if (pipe(event_queue_pipe_fd) == -1)
+        throw std::system_error(std::error_code(errno, std::system_category()));
 }
 
-unsigned EventLoop::add_event_listener(
+bool EventLoop::add_event_listener(
     unsigned eventid,
-    const std::function<void(unsigned, unsigned)> &func
+    const std::function<void(unsigned)> &func
 )
 {
-    if (!events.count(eventid))
-        events.emplace(
-            eventid,
-            std::unordered_map<unsigned, std::function<void(unsigned, unsigned)>>()
-        );
-    events.at(eventid).emplace(++last_event_id, func);
-    return last_event_id;
+    return events.emplace(eventid, func).second;
 }
 
-void EventLoop::add_fd_listener(int fd, const std::function<void(int)> &func)
+bool EventLoop::add_fd_listener(int fd, const std::function<void(int)> &func)
 {
-    manual_fds.emplace(fd, func);
+    return manual_fds.emplace(fd, func).second;
 }
 
-void EventLoop::remove_event_listener(unsigned eventid, unsigned handle)
+int EventLoop::set_timeout(
+    const std::chrono::nanoseconds &timeout,
+    const std::function<void(int)> &func
+)
 {
-    if (!events.count(eventid))
-        return;
+    int timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
 
-    events.at(eventid).erase(handle);
+    if (timerfd == -1)
+        throw std::system_error(std::error_code(errno, std::system_category()));
+
+    struct itimerspec it = {
+        { 0, 0 },
+        { timeout.count() / 1000000000, timeout.count() % 1000000000 }
+    };
+
+    if (timerfd_settime(timerfd, 0, &it, nullptr) == -1)
+        throw std::system_error(std::error_code(errno, std::system_category()));
+
+    timer_fds.emplace(timerfd, func);
+    return timerfd;
 }
 
-void EventLoop::remove_fd_listener(int fd)
+int EventLoop::set_interval(
+    const std::chrono::nanoseconds &interval,
+    const std::function<void(int)> &func
+)
 {
-    if (!manual_fds.count(fd))
-        return;
+    int timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
 
-    manual_fds.erase(fd);
+    if (timerfd == -1)
+        throw std::system_error(std::error_code(errno, std::system_category()));
+
+    struct itimerspec it = {
+        { interval.count() / 1000000000, interval.count() % 1000000000 },
+        { interval.count() / 1000000000, interval.count() % 1000000000 }
+    };
+
+    if (timerfd_settime(timerfd, 0, &it, nullptr) == -1)
+        throw std::system_error(std::error_code(errno, std::system_category()));
+
+    timer_fds.emplace(timerfd, func);
+    return timerfd;
+}
+
+bool EventLoop::remove_event_listener(unsigned eventid)
+{
+    return events.erase(eventid);
+}
+
+bool EventLoop::remove_fd_listener(int fd)
+{
+    return manual_fds.erase(fd);
 }
 
 void EventLoop::trigger_event(unsigned eventid)
 {
-    event_queue.push(eventid);
+    if (write(event_queue_pipe_fd[1], &eventid, sizeof(eventid)) == -1)
+        throw std::system_error(std::error_code(errno, std::system_category()));
+
+    pending_events++;
 }
 
-void EventLoop::clear_timeout(unsigned handle)
+bool EventLoop::clear_timeout(int handle)
 {
-    if (!timers.count(handle))
-        return;
+    if (!timer_fds.count(handle))
+        return false;
 
-    timers.erase(handle);
+    close(handle);
+    return timer_fds.erase(handle);
 }
 
-void EventLoop::clear_interval(unsigned handle)
+bool EventLoop::clear_interval(int handle)
 {
-    clear_timeout(handle);
-}
-
-unsigned EventLoop::set_timeout(
-    const std::chrono::milliseconds &timeout,
-    const std::function<void(unsigned)> &func
-)
-{
-    timers.emplace(
-        ++last_timer_id,
-        TimerInfo(std::chrono::steady_clock::now(), timeout, true, func)
-    );
-    return last_timer_id;
-}
-
-unsigned EventLoop::set_interval(
-    const std::chrono::milliseconds &interval,
-    const std::function<void(unsigned)> &func
-)
-{
-    timers.emplace(
-        ++last_timer_id,
-        TimerInfo(std::chrono::steady_clock::now(), interval, false, func)
-    );
-    return last_timer_id;
+    return clear_timeout(handle);
 }
 
 void EventLoop::mainloop()
 {
     while (true) {
-        struct timeval tv = {
-            event_loop_interval_us / 1000000,
-            event_loop_interval_us % 1000000
-        };
         int maxfd = 0;
         fd_set listen_fds;
         FD_ZERO(&listen_fds);
@@ -112,39 +122,52 @@ void EventLoop::mainloop()
             FD_SET(i.first, &listen_fds);
         }
 
-        if (select(++maxfd, &listen_fds, nullptr, nullptr, &tv) == -1) {
-            perror("select");
-            return;
+        for (const auto &i : timer_fds) {
+            maxfd = std::max(maxfd, i.first);
+            FD_SET(i.first, &listen_fds);
         }
 
+        maxfd = std::max(maxfd, event_queue_pipe_fd[0]);
+        FD_SET(event_queue_pipe_fd[0], &listen_fds);
+
+        if (select(++maxfd, &listen_fds, nullptr, nullptr, nullptr) == -1)
+            throw std::system_error(std::error_code(errno, std::system_category()));
+
+        // *INDENT-OFF*
+        std::vector<std::pair<int, std::function<void(int)>>> should_call_cb_fds;
+        // *INDENT-ON*
         for (const auto &i : manual_fds)
             if (FD_ISSET(i.first, &listen_fds) && i.second)
-                i.second(i.first);
+                should_call_cb_fds.push_back(i);
 
-        std::vector<int> to_be_removed_timers;
-
-        for (auto &i : timers) {
-            std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-
-            if (now - i.second.last_time >= i.second.interval) {
-                i.second.last_time = now;
-                i.second.callback(i.first);
-
-                if (i.second.oneshot)
-                    to_be_removed_timers.push_back(i.first);
+        for (const auto &i : timer_fds)
+            if (FD_ISSET(i.first, &listen_fds) && i.second) {
+                should_call_cb_fds.push_back(i);
+                uint64_t a;
+                read(i.first, &a, sizeof(a));
             }
-        }
 
-        for (int i : to_be_removed_timers)
-            clear_timeout(i);
+        for (const auto &i : should_call_cb_fds)
+            i.second(i.first);
 
-        if (event_queue.empty())
+        if (!FD_ISSET(event_queue_pipe_fd[0], &listen_fds))
             continue;
 
-        if (events.count(event_queue.front()))
-            for (const auto &i : events.at(event_queue.front()))
-                i.second(event_queue.front(), i.first);
+        std::vector<unsigned> pending_eventids;
+        pending_eventids.resize(pending_events);
 
-        event_queue.pop();
+        if (
+            read(
+                event_queue_pipe_fd[0],
+                pending_eventids.data(),
+                sizeof(unsigned) * pending_events
+            ) == -1
+        )
+            throw std::system_error(std::error_code(errno, std::system_category()));
+
+        pending_events = 0;
+
+        for (unsigned i : pending_eventids)
+            events.at(i)(i);
     }
 }

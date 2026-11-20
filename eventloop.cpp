@@ -14,7 +14,6 @@
 EventLoop::EventLoop() :
     last_event_handle(0),
     event_queue_pipe_fd(),
-    pending_events(0),
     oneshot_timer_fds(),
     timer_fds(),
     manual_fds(),
@@ -127,7 +126,6 @@ void EventLoop::trigger_event(unsigned eventid, const std::shared_ptr<EventData>
         throw std::system_error(std::error_code(errno, std::system_category()));
 
     events_data.push(data);
-    pending_events++;
 }
 
 void EventLoop::clear_timeout(int fd)
@@ -202,6 +200,7 @@ void EventLoop::mainloop()
         if (!FD_ISSET(event_queue_pipe_fd[0], &listen_fds))
             continue;
 
+        unsigned pending_events = events_data.size();
         std::vector<unsigned> pending_eventids;
         pending_eventids.resize(pending_events);
 
@@ -213,8 +212,6 @@ void EventLoop::mainloop()
             ) == -1
         )
             throw std::system_error(std::error_code(errno, std::system_category()));
-
-        pending_events = 0;
 
         for (unsigned i : pending_eventids) {
             std::cerr << "processing event " << i << std::endl;

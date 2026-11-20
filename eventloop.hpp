@@ -17,7 +17,6 @@ class EventLoop
 {
         unsigned last_event_handle;
         int event_queue_pipe_fd[2];
-        unsigned pending_events;
         std::unordered_set<int> oneshot_timer_fds;
         // arg1: fd
         std::unordered_map<int, std::function<void(int)>> timer_fds, manual_fds;

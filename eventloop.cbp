@@ -29,7 +29,7 @@
 			</Target>
 		</Build>
 		<Compiler>
-			<Add option="-fexceptions" />
+			<Add option="-std=gnu++17" />
 		</Compiler>
 		<Unit filename="eventloop.cpp" />
 		<Unit filename="eventloop.hpp" />

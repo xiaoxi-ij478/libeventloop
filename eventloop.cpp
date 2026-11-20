@@ -1,7 +1,6 @@
 #include <cstdint>
 #include <algorithm>
 #include <iterator>
-#include <iostream>
 #include <utility>
 #include <stdexcept>
 
@@ -29,7 +28,6 @@ unsigned EventLoop::add_event_listener(
     const std::function<void(unsigned, unsigned, std::shared_ptr<EventData>)> &func
 )
 {
-    std::cerr << "registered event listener for id " << eventid << std::endl;
 
     if (!events.count(eventid))
         events.emplace(eventid, decltype(events.cbegin()->second)());
@@ -40,7 +38,6 @@ unsigned EventLoop::add_event_listener(
 
 void EventLoop::add_fd_listener(int fd, const std::function<void(int)> &func)
 {
-    std::cerr << "registered fd listener for fd " << fd << std::endl;
     manual_fds.emplace(fd, func);
 }
 
@@ -49,7 +46,6 @@ int EventLoop::set_timeout(
     const std::function<void(int)> &func
 )
 {
-    std::cerr << "set timeout " << timeout.count() << " ns" << std::endl;
     int timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
 
     if (timerfd == -1)
@@ -73,7 +69,6 @@ int EventLoop::set_interval(
     const std::function<void(int)> &func
 )
 {
-    std::cerr << "set interval " << interval.count() << " ns" << std::endl;
     int timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
 
     if (timerfd == -1)
@@ -93,7 +88,6 @@ int EventLoop::set_interval(
 
 int EventLoop::after_idle(const std::function<void()> &func)
 {
-    std::cerr << "after idle" << std::endl;
     return set_timeout(std::chrono::nanoseconds(1), [&func](int) {
         func();
     });
@@ -101,7 +95,6 @@ int EventLoop::after_idle(const std::function<void()> &func)
 
 void EventLoop::remove_event_listener(unsigned handle)
 {
-    std::cerr << "removed event listener with handle " << handle << std::endl;
 
     for (auto &i : events) {
         if (!i.second.count(handle))
@@ -114,14 +107,11 @@ void EventLoop::remove_event_listener(unsigned handle)
 
 void EventLoop::remove_fd_listener(int fd)
 {
-    std::cerr << "removed fd listener with fd " << fd << std::endl;
     manual_fds.erase(fd);
 }
 
 void EventLoop::trigger_event(unsigned eventid, const std::shared_ptr<EventData> &data)
 {
-    std::cerr << "trigger event id " << eventid << std::endl;
-
     if (write(event_queue_pipe_fd[1], &eventid, sizeof(eventid)) == -1)
         throw std::system_error(std::error_code(errno, std::system_category()));
 
@@ -130,7 +120,6 @@ void EventLoop::trigger_event(unsigned eventid, const std::shared_ptr<EventData>
 
 void EventLoop::clear_timeout(int fd)
 {
-    std::cerr << "clear timeout fd " << fd << std::endl;
 
     if (!timer_fds.count(fd))
         return;
@@ -142,7 +131,6 @@ void EventLoop::clear_timeout(int fd)
 
 void EventLoop::clear_interval(int fd)
 {
-    std::cerr << "clear interval fd " << fd << std::endl;
     clear_timeout(fd);
 }
 
@@ -173,7 +161,6 @@ void EventLoop::mainloop()
             auto next = std::next(it);
 
             if (FD_ISSET(it->first, &listen_fds) && it->second) {
-                std::cerr << "processing fd " << it->first << std::endl;
                 it->second(it->first);
             }
 
@@ -184,7 +171,6 @@ void EventLoop::mainloop()
             auto next = std::next(it);
 
             if (FD_ISSET(it->first, &listen_fds) && it->second) {
-                std::cerr << "processing timer fd " << it->first << std::endl;
                 uint64_t a;
                 read(it->first, &a, sizeof(a));
                 // to prevent callback from closing fd prematurely, call it after getting required info
@@ -214,7 +200,6 @@ void EventLoop::mainloop()
             throw std::system_error(std::error_code(errno, std::system_category()));
 
         for (unsigned i : pending_eventids) {
-            std::cerr << "processing event " << i << std::endl;
 
             for (auto it = events.at(i).cbegin(); it != events.at(i).cend();) {
                 auto next = std::next(it);

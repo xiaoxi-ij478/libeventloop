@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <algorithm>
+#include <system_error>
 #include <iterator>
 #include <utility>
 #include <stdexcept>
@@ -20,15 +21,58 @@ EventLoop::EventLoop() :
     events_data()
 {
     if (pipe(event_queue_pipe_fd) == -1)
-        throw std::system_error(std::error_code(errno, std::general_category()));
+        throw std::system_error(std::error_code(errno, std::generic_category()));
+}
+
+EventLoop::EventLoop(EventLoop &&other) :
+    last_event_handle(std::move(other.last_event_handle)),
+    event_queue_pipe_fd(),
+    oneshot_timer_fds(std::move(other.oneshot_timer_fds)),
+    timer_fds(std::move(other.timer_fds)),
+    manual_fds(std::move(other.manual_fds)),
+    events(std::move(other.events)),
+    events_data(std::move(other.events_data))
+{
+    other.last_event_handle = 0;
+    std::move(other.event_queue_pipe_fd, other.event_queue_pipe_fd + 2, event_queue_pipe_fd);
+
+    // we make sure the moved event loop can still be used
+    if (pipe(other.event_queue_pipe_fd) == -1)
+        throw std::system_error(std::error_code(errno, std::generic_category()));
+}
+
+EventLoop &EventLoop::operator=(EventLoop &&other)
+{
+    last_event_handle = std::move(other.last_event_handle);
+    other.last_event_handle = 0;
+    std::move(other.event_queue_pipe_fd, other.event_queue_pipe_fd + 2, event_queue_pipe_fd);
+
+    if (pipe(other.event_queue_pipe_fd) == -1)
+        throw std::system_error(std::error_code(errno, std::generic_category()));
+
+    oneshot_timer_fds = std::move(other.oneshot_timer_fds);
+    timer_fds = std::move(other.timer_fds);
+    manual_fds = std::move(other.manual_fds);
+    events = std::move(other.events);
+    events_data = std::move(other.events_data);
+    return *this;
+}
+
+EventLoop::~EventLoop()
+{
+    close(event_queue_pipe_fd[0]);
+    close(event_queue_pipe_fd[1]);
+    decltype(timer_fds) timer_fds_copy(timer_fds);
+
+    for (const auto &i : timer_fds_copy)
+        clear_timeout(i.first);
 }
 
 unsigned EventLoop::add_event_listener(
     unsigned eventid,
-    const std::function<void(unsigned, unsigned, std::shared_ptr<EventData>)> &func
+    const EventLoop::EventCallbackType &func
 )
 {
-
     if (!events.count(eventid))
         events.emplace(eventid, decltype(events.cbegin()->second)());
 
@@ -36,20 +80,23 @@ unsigned EventLoop::add_event_listener(
     return last_event_handle;
 }
 
-void EventLoop::add_fd_listener(int fd, const std::function<void(int)> &func)
+void EventLoop::add_fd_listener(
+    int fd,
+    const EventLoop::TimerCallbackType &func
+)
 {
     manual_fds.emplace(fd, func);
 }
 
 int EventLoop::set_timeout(
     const std::chrono::nanoseconds &timeout,
-    const std::function<void(int)> &func
+    const EventLoop::TimerCallbackType &func
 )
 {
     int timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
 
     if (timerfd == -1)
-        throw std::system_error(std::error_code(errno, std::general_category()));
+        throw std::system_error(std::error_code(errno, std::generic_category()));
 
     struct itimerspec it = {
         { 0, 0 },
@@ -57,7 +104,7 @@ int EventLoop::set_timeout(
     };
 
     if (timerfd_settime(timerfd, 0, &it, nullptr) == -1)
-        throw std::system_error(std::error_code(errno, std::general_category()));
+        throw std::system_error(std::error_code(errno, std::generic_category()));
 
     timer_fds.emplace(timerfd, func);
     oneshot_timer_fds.emplace(timerfd);
@@ -66,13 +113,13 @@ int EventLoop::set_timeout(
 
 int EventLoop::set_interval(
     const std::chrono::nanoseconds &interval,
-    const std::function<void(int)> &func
+    const EventLoop::TimerCallbackType &func
 )
 {
     int timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
 
     if (timerfd == -1)
-        throw std::system_error(std::error_code(errno, std::general_category()));
+        throw std::system_error(std::error_code(errno, std::generic_category()));
 
     struct itimerspec it = {
         { interval.count() / 1000000000, interval.count() % 1000000000 },
@@ -80,7 +127,7 @@ int EventLoop::set_interval(
     };
 
     if (timerfd_settime(timerfd, 0, &it, nullptr) == -1)
-        throw std::system_error(std::error_code(errno, std::general_category()));
+        throw std::system_error(std::error_code(errno, std::generic_category()));
 
     timer_fds.emplace(timerfd, func);
     return timerfd;
@@ -89,13 +136,12 @@ int EventLoop::set_interval(
 int EventLoop::after_idle(const std::function<void()> &func)
 {
     return set_timeout(std::chrono::nanoseconds(1), [&func](int) {
-        func();
-    });
+                                                        func();
+                                                    });
 }
 
 void EventLoop::remove_event_listener(unsigned handle)
 {
-
     for (auto &i : events) {
         if (!i.second.count(handle))
             continue;
@@ -110,17 +156,17 @@ void EventLoop::remove_fd_listener(int fd)
     manual_fds.erase(fd);
 }
 
-void EventLoop::trigger_event(unsigned eventid, const std::shared_ptr<EventData> &data)
+void EventLoop::trigger_event(unsigned eventid,
+                              const std::shared_ptr<EventData> &data)
 {
     if (write(event_queue_pipe_fd[1], &eventid, sizeof(eventid)) == -1)
-        throw std::system_error(std::error_code(errno, std::general_category()));
+        throw std::system_error(std::error_code(errno, std::generic_category()));
 
     events_data.push(data);
 }
 
 void EventLoop::clear_timeout(int fd)
 {
-
     if (!timer_fds.count(fd))
         return;
 
@@ -155,14 +201,13 @@ void EventLoop::mainloop()
         FD_SET(event_queue_pipe_fd[0], &listen_fds);
 
         if (select(++maxfd, &listen_fds, nullptr, nullptr, nullptr) == -1)
-            throw std::system_error(std::error_code(errno, std::general_category()));
+            throw std::system_error(std::error_code(errno, std::generic_category()));
 
         for (auto it = manual_fds.cbegin(); it != manual_fds.cend();) {
             auto next = std::next(it);
 
-            if (FD_ISSET(it->first, &listen_fds) && it->second) {
+            if (FD_ISSET(it->first, &listen_fds) && it->second)
                 it->second(it->first);
-            }
 
             it = next;
         }
@@ -197,10 +242,9 @@ void EventLoop::mainloop()
                 sizeof(unsigned) * pending_events
             ) == -1
         )
-            throw std::system_error(std::error_code(errno, std::general_category()));
+            throw std::system_error(std::error_code(errno, std::generic_category()));
 
         for (unsigned i : pending_eventids) {
-
             for (auto it = events.at(i).cbegin(); it != events.at(i).cend();) {
                 auto next = std::next(it);
                 it->second(i, it->first, events_data.front());

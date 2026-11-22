@@ -20,7 +20,7 @@ EventLoop::EventLoop() :
     events_data()
 {
     if (pipe(event_queue_pipe_fd) == -1)
-        throw std::system_error(std::error_code(errno, std::system_category()));
+        throw std::system_error(std::error_code(errno, std::general_category()));
 }
 
 unsigned EventLoop::add_event_listener(
@@ -49,7 +49,7 @@ int EventLoop::set_timeout(
     int timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
 
     if (timerfd == -1)
-        throw std::system_error(std::error_code(errno, std::system_category()));
+        throw std::system_error(std::error_code(errno, std::general_category()));
 
     struct itimerspec it = {
         { 0, 0 },
@@ -57,7 +57,7 @@ int EventLoop::set_timeout(
     };
 
     if (timerfd_settime(timerfd, 0, &it, nullptr) == -1)
-        throw std::system_error(std::error_code(errno, std::system_category()));
+        throw std::system_error(std::error_code(errno, std::general_category()));
 
     timer_fds.emplace(timerfd, func);
     oneshot_timer_fds.emplace(timerfd);
@@ -72,7 +72,7 @@ int EventLoop::set_interval(
     int timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
 
     if (timerfd == -1)
-        throw std::system_error(std::error_code(errno, std::system_category()));
+        throw std::system_error(std::error_code(errno, std::general_category()));
 
     struct itimerspec it = {
         { interval.count() / 1000000000, interval.count() % 1000000000 },
@@ -80,7 +80,7 @@ int EventLoop::set_interval(
     };
 
     if (timerfd_settime(timerfd, 0, &it, nullptr) == -1)
-        throw std::system_error(std::error_code(errno, std::system_category()));
+        throw std::system_error(std::error_code(errno, std::general_category()));
 
     timer_fds.emplace(timerfd, func);
     return timerfd;
@@ -113,7 +113,7 @@ void EventLoop::remove_fd_listener(int fd)
 void EventLoop::trigger_event(unsigned eventid, const std::shared_ptr<EventData> &data)
 {
     if (write(event_queue_pipe_fd[1], &eventid, sizeof(eventid)) == -1)
-        throw std::system_error(std::error_code(errno, std::system_category()));
+        throw std::system_error(std::error_code(errno, std::general_category()));
 
     events_data.push(data);
 }
@@ -155,7 +155,7 @@ void EventLoop::mainloop()
         FD_SET(event_queue_pipe_fd[0], &listen_fds);
 
         if (select(++maxfd, &listen_fds, nullptr, nullptr, nullptr) == -1)
-            throw std::system_error(std::error_code(errno, std::system_category()));
+            throw std::system_error(std::error_code(errno, std::general_category()));
 
         for (auto it = manual_fds.cbegin(); it != manual_fds.cend();) {
             auto next = std::next(it);
@@ -197,7 +197,7 @@ void EventLoop::mainloop()
                 sizeof(unsigned) * pending_events
             ) == -1
         )
-            throw std::system_error(std::error_code(errno, std::system_category()));
+            throw std::system_error(std::error_code(errno, std::general_category()));
 
         for (unsigned i : pending_eventids) {
 
